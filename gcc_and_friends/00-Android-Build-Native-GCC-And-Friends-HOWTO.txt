@@ -1,0 +1,201 @@
+
+******************************************************
+HOWTO build a native GCC (and its friends) for Android
+******************************************************
+
+This document reports cross-compilation, through Android NDK, of GCC 4.6
+(and related packages) to obtain a native compiler for Android (on ARM).
+
+Tested on:
+build platform: GNU/Linux Ubuntu 14.04 x86_64 with android-ndk-r9d.
+target platform: Cyanogenmod 10.1.3 (Android 4.2.2)
+                 on the Google Nexus 7 3G 2012 tablet (tilapia).
+
+The resulting native GCC compiler has been successfully used to natively build
+Picocom 1.7[*], Nanocomsole 1.0[**], and some very simple C++ examples.
+[*] with the patch provided at
+    https://github.com/marco-pratesi/android/tree/master/picocom
+[**] https://github.com/marco-pratesi/nanocomsole/tree/master/nanocomsole-1.0
+
+Retrieve:
+- gmp-5.0.5.tar.bz2 from https://android.googlesource.com/toolchain/gmp/+/master
+  (i.e. from https://android.googlesource.com/toolchain/gmp/+archive/master.tar.gz)
+- mpfr-3.1.1.tar.bz2 from https://android.googlesource.com/toolchain/mpfr/+/master
+  (i.e. from https://android.googlesource.com/toolchain/mpfr/+archive/master.tar.gz)
+- mpc-1.0.1.tar.gz from https://android.googlesource.com/toolchain/mpc/+/master
+  (i.e. from https://android.googlesource.com/toolchain/mpc/+archive/master.tar.gz)
+- binutils-2.21.tar.gz from https://android.googlesource.com/toolchain/binutils/+/master/binutils-2.21/
+  (https://android.googlesource.com/toolchain/binutils/+archive/master/binutils-2.21.tar.gz)
+- gcc-4.6.tar.gz from https://android.googlesource.com/toolchain/gcc/+/master
+  (=> https://android.googlesource.com/toolchain/gcc/+/master/gcc-4.6/
+   => https://android.googlesource.com/toolchain/gcc/+archive/master/gcc-4.6.tar.gz)
+- make-4.0.tar.bz2 from http://www.gnu.org/software/make/
+
+apt-get install texinfo flex bison bisonc++
+
+Set the needed environment variables as explained
+in 00_NOTES-env_for_cross_compiling.txt (in the root of the repository)
+with GCC_VERSION=4.6 and API_LEVEL=14.
+
+export TARGET_DIR=/data/local
+export TARGET_ABI=arm-linux-androideabi
+
+mkdir -p $TARGET_DIR
+cp -a $NDK_SYSROOT/usr/* $TARGET_DIR
+chown -R root.root $TARGET_DIR
+
+Go to your build directory and put there all source archives and all patches.
+
+tar xf gmp-5.0.5.tar.bz2 ; cd gmp-5.0.5
+export GMP_BUILD_DIR=`pwd`
+./configure --host=$TARGET_ABI --prefix=$TARGET_DIR
+make ; make install
+cd ..
+
+tar xf mpfr-3.1.1.tar.bz2 ; cd mpfr-3.1.1
+export MPFR_BUILD_DIR=`pwd`
+patch -p1 < ../mpfr-3.1.1-android.patch
+./configure --host=$TARGET_ABI --prefix=$TARGET_DIR --with-gmp=$TARGET_DIR
+make ; make install
+cd ..
+
+tar xf mpc-1.0.1.tar.gz ; cd mpc-1.0.1
+export MPC_BUILD_DIR=`pwd`
+./configure --host=$TARGET_ABI --prefix=$TARGET_DIR --with-gmp=$TARGET_DIR --with-mpfr=$TARGET_DIR
+make ; make install
+cd ..
+
+mkdir binutils-2.21 ; cd binutils-2.21 ; tar xf ../binutils-2.21.tar.gz
+patch -p1 < ../binutils-2.21-android.patch
+cd .. ; mkdir binutils-2.21-build ; cd binutils-2.21-build
+../binutils-2.21/configure --host=$TARGET_ABI --target=$TARGET_ABI --prefix=$TARGET_DIR --disable-nls
+make
+When the build stops due to a warning treated as an error, edit ld/Makefile
+to remove "-Werror" from the definition of WARN_CFLAGS, then run "make" again:
+make ; make install
+cd ..
+
+mkdir gcc-4.6-20120106 ; cd gcc-4.6-20120106 ; tar xf ../gcc-4.6.tar.gz
+patch -p1 < ../gcc-4.6-20120106-android.patch
+patch -p1 < ../gcc-4.6-20120106-android-rename-libstdc++.patch
+cd .. ; mkdir gcc-4.6-20120106-build ; cd gcc-4.6-20120106-build
+# Some Makefile entries will refer to the NDK cross-compiler without
+# the full path; the following PATH setting saves a lot of troubles.
+export PATH=$NDK_TOOLCHAIN/bin:$PATH
+../gcc-4.6-20120106/configure \
+  --host=$TARGET_ABI --target=$TARGET_ABI --prefix=$TARGET_DIR \
+  --enable-languages=c,c++ --disable-nls \
+  --with-gmp-include=$GMP_BUILD_DIR --with-gmp-lib=$GMP_BUILD_DIR/.libs \
+  --with-mpfr-include=$MPFR_BUILD_DIR/src --with-mpfr-lib=$MPFR_BUILD_DIR/src/.libs \
+  --with-mpc-include=$MPC_BUILD_DIR/src --with-mpc-lib=$MPC_BUILD_DIR/src/.libs
+# With the following (simpler) configure options, the build fails
+# (do not ask me why):
+# --with-gmp=$TARGET_DIR --with-mpfr=$TARGET_DIR --with-mpc=$TARGET_DIR
+# To adapt some definitions of the cross-compiler in the generated Makefile:
+patch -p1 < ../gcc-4.6-20120106-build-android.patch
+# (the patch may fail and you may have to apply it with your bare hands).
+make  # make -j 2 (if you can)
+make install
+cd ..
+
+tar xf make-4.0.tar.bz2 ; cd make-4.0
+patch -p1 < ../make-4.0-android.patch
+./configure --host=$TARGET_ABI --prefix=$TARGET_DIR
+make ; make install
+cd ..
+
+In $TARGET_DIR/libexec/gcc/$TARGET_ABI/4.6/install-tools/
+replace "/bin/sh" with "/system/bin/sh" (or, eventually, with bash,
+if it is available on the target device) in the first line
+of fixinc.sh, mkheaders, and mkinstalldirs
+
+Strip binaries to save disk space:
+( cd $TARGET_DIR/$TARGET_ABI/bin ; $STRIP * )
+( cd $TARGET_DIR/bin ; $STRIP * )
+( for directory in lib lib/armv7-a lib/armv7-a/hard lib/armv7-a/thumb lib/armv7-a/thumb/hard lib/thumb ; \
+  do cd $TARGET_DIR/$directory ; \
+  $STRIP --strip-unneeded *.so *.so.* ; done )
+( cd $TARGET_DIR/libexec/gcc/$TARGET_ABI/4.6 ; \
+  $STRIP cc1 cc1plus collect2 lto1 lto-wrapper ; \
+  $STRIP --strip-unneeded libfunction_reordering_plugin.so.0.0.0 liblto_plugin.so.0.0.0 )
+( cd $TARGET_DIR/libexec/gcc/$TARGET_ABI/4.6/install-tools ; $STRIP fixincl )
+
+You may want to replace some hard links with symbolic links.
+#Identical files can be found, as an example, with commands like
+#md5sum * | sort
+#sha256sum * | sort
+( cd $TARGET_DIR/$TARGET_ABI/bin ; rm ld.bfd ; ln -s ld ld.bfd )
+( cd $TARGET_DIR/bin ; \
+  for file in $TARGET_ABI-c++ $TARGET_ABI-g++ c++ ; \
+  do rm $file ; ln -s g++ $file ; done ; \
+  for file in $TARGET_ABI-gcc $TARGET_ABI-gcc-4.6 ; \
+  do rm $file ; ln -s gcc $file ; done ; \
+  rm ld.bfd ; ln -s ld ld.bfd )
+
+Put the $TARGET_DIR tree on the target device.
+On the target device, to use this stuff, set needed environment variables,
+such as (assuming that the TARGET_DIR is /data/local)
+export PATH=$PATH:/data/local/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/data/local/lib
+and, eventually,
+export CC=gcc
+export CXX=g++
+[...]
+
+-------------------------------
+About renaming GNU libstdc++...
+-------------------------------
+
+This section explains the reasons why the
+gcc-4.6-20120106-android-rename-libstdc++.patch has been applied.
+
+You can refer to docs/CPLUSPLUS-SUPPORT.html, available in Android NDK,
+as a starting point.
+Shortly: the /system/lib/libstdc++.so of Android (that comes from Bionic)
+provides very minimal support, not even enough to build and run some simple
+"hello world" examples.
+GCC sources include the full-featured GNU libstdc++, whose build generates,
+by default, a homonymous libstdc++.so shared library.
+Obviously, the two libraries are not compatible, and, very likely,
+you will want/need to use the GNU libstdc++.
+The coincidence of names usually cause problems, as you may easily figure out:
+usually, the build fails if you try to link the Bionic libstdc++;
+on the other side, if you build against the GNU libstdc++, dynamic linking
+fails at runtime if the Bionic libstdc++ is considered first.
+A simple workaround to bypass the problem may consist of deleting the
+GNU libstdc++.so, to force static linking of the GNU libstdc++.a at build time
+and avoid link problems at runtime (obviously, another option consists
+of using the "-static" g++ option).
+Alternatively, you can keep the GNU libstdc++.so, link against it
+at build time, and resort to LD_PRELOAD=$TARGET_DIR/lib/libstdc++.so
+to force linking the GNU libstdc++.so at runtime (note: giving precedence
+to $TARGET_DIR/lib in the LD_LIBRARY_PATH environment variable
+would very likely cause problems with many system executables).
+
+The gcc-4.6-20120106-android-rename-libstdc++.patch solves that mess:
+- the GNU libstdc++ build produces binaries with different names,
+  i.e. libstdc++gcc.so, libstdc++gcc.a, and so on => no more homonyms
+- the resulting compiler links against libstdc++gcc.* by default,
+  i.e. you do not need to specify any option to link the right library
+- there are no more ambiguities about runtime linking
+
+The following patch, included in Android NDK, has been taken
+as a starting point:
+build/tools/toolchain-patches/gcc/0006-Disable-libstdc-versioning.patch
+
+NOTE: in Android NDK, the GNU libstdc++ has been renamed as libgnustl_shared.so
+(and libgnustl_static.a) and can be found in the sources/cxx-stl/gnu-libstdc++/
+directory tree, that contains header files, too.
+As an example, you can cross-compile hello_world.cpp through Android NDK
+using the following command:
+$NDK_BASE/toolchains/arm-linux-androideabi-4.6/prebuilt/linux-x86_64/bin/arm-linux-androideabi-g++ \
+ --sysroot=/opt/android-ndk/platforms/android-14/arch-arm \
+ -I$NDK_BASE/sources/cxx-stl/gnu-libstdc++/4.6/include \
+ -I$NDK_BASE/sources/cxx-stl/gnu-libstdc++/4.6/libs/armeabi/include \
+ -L$NDK_BASE/sources/cxx-stl/gnu-libstdc++/4.6/libs/armeabi -lgnustl_shared \
+ hello_world.cpp -o hello_world
+
+NOTE: header files for the Android libstdc++ can be found in Android NDK
+in the sources/cxx-stl/system/include/ directory, and, obviously,
+in the Bionic sources, too.
+
